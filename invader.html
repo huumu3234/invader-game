@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Invader - Shelter Collision Fixed</title>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: 'Courier New', sans-serif; overflow: hidden; display: flex; flex-direction: column; height: 100vh; touch-action: none; }
+        #top-bar { height: 45px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; font-size: 16px; border-bottom: 2px solid #333; background: #111; z-index: 10; }
+        #lives-container { display: flex; gap: 8px; align-items: center; min-width: 60px; justify-content: flex-end; }
+        #game-container { flex: 1; position: relative; background: #000; overflow: hidden; }
+        canvas { display: block; }
+        #game-container::after { content: " "; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(rgba(18,16,16,0) 50%, rgba(0,0,0,0.1) 50%), linear-gradient(90deg, rgba(255,0,0,0.02), rgba(0,255,0,0.01), rgba(0,0,255,0.02)); background-size: 100% 4px, 3px 100%; pointer-events: none; z-index: 2; }
+        #ui-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; z-index: 5; }
+        .status-msg { color: #fff; font-size: 24px; font-weight: bold; text-align: center; white-space: pre-wrap; animation: blink 0.8s step-end infinite; }
+        @keyframes blink { 0% {opacity: 0;} 50% {opacity: 1;} 100% {opacity: 0;} }
+        #controller { height: 180px; background: linear-gradient(180deg, #2a2a2a 0%, #151515 15%, #000 100%); display: flex; justify-content: space-between; align-items: center; padding: 0 20px 20px 20px; box-sizing: border-box; border-top: 5px solid #333; position: relative; z-index: 10; }
+        .control-group { display: flex; flex-direction: column; align-items: center; }
+        #joypad-base { width: 110px; height: 110px; background: #1a1a1a; border: 4px solid #333; border-radius: 50%; position: relative; box-shadow: inset 0 0 15px #000, 0 4px 8px rgba(0,0,0,0.8); }
+        #joypad-knob { width: 58px; height: 58px; background: radial-gradient(circle at 35% 35%, #444, #000); border: 2px solid #111; border-radius: 50%; position: absolute; left: 24px; top: 24px; transition: transform 0.15s; box-shadow: 0 10px 18px rgba(0,0,0,0.9); z-index: 12; }
+        #fire-btn { width: 100px; height: 100px; background: radial-gradient(#e22, #800); border: 4px solid #500; border-radius: 50%; box-shadow: 0 8px 0 #300, 0 12px 20px rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        #fire-btn:active { transform: translateY(5px); box-shadow: 0 3px 0 #200; background: radial-gradient(#f11, #700); }
+        #start-btn { width: 60px; height: 60px; background: radial-gradient(#fff, #bbb); border: 3px solid #888; border-radius: 50%; box-shadow: 0 5px 0 #666, 0 5px 10px rgba(0,0,0,0.5); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        #start-btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #444; }
+    </style>
+</head>
+<body>
+
+<div id="top-bar">
+    <div>SCORE:<span id="score">0000</span></div>
+    <div>HI-SCORE:<span id="hi-score-val">0000</span></div>
+    <div id="lives-container"></div>
+</div>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-overlay"><div class="status-msg" id="status-label"></div></div>
+</div>
+
+<div id="controller">
+    <div class="control-group"><div id="joypad-base"><div id="joypad-knob"></div></div></div>
+    <div class="control-group"><div id="start-btn"></div></div>
+    <div class="control-group"><div id="fire-btn"></div></div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d');
+    const container = document.getElementById('game-container');
+    const scoreElement = document.getElementById('score'); const hiScoreValElement = document.getElementById('hi-score-val');
+    const livesContainer = document.getElementById('lives-container'); const statusLabel = document.getElementById('status-label');
+    const startBtn = document.getElementById('start-btn');
+
+    let gameState = 'TITLE', score = 0, lives = 3, attractTimer = 0, roundTimer = 0;
+    const invaderW = 22, invaderH = 16, playerW = 28, playerH = 18;
+    let player = { x: 0, y: 0, w: playerW, h: playerH, speed: 2.2, dx: 0 };
+    let bullets = [], enemyBullets = [], invaders = [], shelters = [], particles = [], stars = [], floatingScores = [];
+    let invaderDirection = 1, moveTick = 0, pose = 0, moveSoundStep = 0, stepAmount = 10;
+    let ufo = { x: -50, y: 25, w: 32, h: 14, active: false, speed: 1.2, dir: 1, ufoTimer: 0 };
+    let aiTargetIndex = -1, inputState = { left: false, right: false };
+    let hiScore = parseInt(localStorage.getItem('inv_hi_score')) || 500;
+    let hiName = localStorage.getItem('inv_hi_name') || "GEM";
+    let entryName = ["A", "A", "A"], entryIdx = 0, charPool = "ABCDEFGHIJKLMNOPQRSTUVWXYZ. ", poolIdx = 0, inputCooldown = 0;
+
+    function initStars() { stars = []; for (let i = 0; i < 40; i++) stars.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: Math.random() * 2, speed: Math.random() * 0.4 + 0.1 }); }
+    function resizeCanvas() { canvas.width = container.clientWidth; canvas.height = container.clientHeight; initStars(); }
+    function drawPixelPlayer(ctx, x, y, w, h) { ctx.fillStyle = "#0f0"; ctx.fillRect(x + w*0.42, y, w*0.16, h*0.25); ctx.fillRect(x + w*0.1, y + h*0.25, w*0.8, h*0.2); ctx.fillRect(x, y + h*0.45, w, h*0.55); }
+    function updateLivesUI() { livesContainer.innerHTML = ''; if (gameState === 'TITLE' || gameState === 'NAME_ENTRY') return; for (let i = 0; i < lives; i++) { const ic = document.createElement('canvas'); ic.width = 24; ic.height = 16; const ictx = ic.getContext('2d'); drawPixelPlayer(ictx, 0, 0, 24, 16); livesContainer.appendChild(ic); } }
+
+    let audioCtx = null;
+    const sounds = {
+        shoot: () => playSound(800, 'square', 0.1, 0.03, 100),
+        invaderMove: (step) => playSound(80 - (step * 10), 'sawtooth', 0.05, 0.02),
+        explosion: () => playSound(120, 'sawtooth', 0.5, 0.08, 10),
+        ufoHit: () => playSound(1500, 'square', 0.4, 0.08, 400),
+        select: () => playSound(440, 'square', 0.05, 0.05),
+        ufo: () => { if(!audioCtx) return; const now = audioCtx.currentTime; const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.frequency.setValueAtTime(1000, now); for(let i=0; i<10; i++) osc.frequency.linearRampToValueAtTime(1000 + (i%2?150:-150), now + i*0.1); gain.gain.setValueAtTime(0.01, now); osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(now + 1); }
+    };
+    function playSound(freq, type, duration, volume = 0.1, slide = 0) { if (!audioCtx) return; try { const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime); if (slide !== 0) osc.frequency.exponentialRampToValueAtTime(slide, audioCtx.currentTime + duration); gain.gain.setValueAtTime(volume, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration); osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + duration); } catch(e) {} }
+
+    function resetGame(mode) {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume();
+        gameState = mode; attractTimer = 0; roundTimer = 0; ufo.ufoTimer = 0; ufo.active = false; particles = []; floatingScores = []; inputState.left = false; inputState.right = false;
+        if (mode === 'PLAYING' || mode === 'DEMO') { score = 0; lives = 3; } else { score = 0; lives = 0; }
+        scoreElement.innerText = "0000"; hiScoreValElement.innerText = String(hiScore).padStart(4, '0'); updateLivesUI();
+        player.y = canvas.height - 30; player.x = canvas.width / 2 - playerW / 2; player.dx = 0; bullets = []; enemyBullets = []; invaderDirection = 1; moveTick = 0;
+        initInvaders(); initShelters(); aiTargetIndex = -1; statusLabel.innerText = (mode === 'DEMO') ? "PUSH START" : "";
+    }
+
+    function initInvaders() { invaders = []; for (let r = 0; r < 4; r++) for (let c = 0; c < 6; c++) invaders.push({ x: c * 40 + 40, y: r * 28 + 60, w: invaderW, h: invaderH, alive: true, type: r === 0 ? 0 : (r < 3 ? 1 : 2) }); }
+    function initShelters() { shelters = []; const spacing = canvas.width / 5; for (let i = 0; i < 4; i++) { let sx = spacing * (i + 1) - 22; for (let r = 0; r < 7; r++) for (let c = 0; c < 9; c++) if (!((r === 0 && (c < 2 || c > 6)) || (r === 1 && (c < 1 || c > 7)) || (r === 5 && (c > 2 && c < 6)) || (r === 6 && (c > 1 && c < 7)))) shelters.push({ x: sx + c * 5, y: player.y - 65 + r * 5, w: 5, h: 5 }); } }
+
+    function handlePlayerHit() {
+        const wasDemo = (gameState === 'DEMO'); lives--; updateLivesUI(); gameState = 'EXPLODING'; player.dx = 0; triggerExplosion(player.x+player.w/2, player.y+player.h/2, '#0f0', 40); sounds.explosion();
+        setTimeout(() => {
+            if (lives > 0 && (gameState === 'EXPLODING')) {
+                player.x = canvas.width / 2 - playerW / 2; player.dx = 0; bullets = []; enemyBullets = [];
+                gameState = wasDemo ? 'DEMO' : 'PLAYING'; statusLabel.innerText = wasDemo ? "PUSH START" : ""; aiTargetIndex = -1;
+            } else if (lives <= 0 && gameState === 'EXPLODING') {
+                if (score > hiScore) { gameState = 'NAME_ENTRY'; entryIdx = 0; entryName = ["A","A","A"]; poolIdx = 0; } else { resetGame('GAMEOVER'); statusLabel.innerText = "GAME OVER"; statusLabel.style.color="#f00"; }
+            }
+        }, 1200);
+    }
+
+    function triggerExplosion(x, y, color = '#0f0', count = 15) { for(let i=0; i<count; i++) particles.push({ x: x, y: y, dx: (Math.random()-0.5)*8, dy: (Math.random()-0.5)*8, size: Math.random()*2+1, color: color, life: 40 }); }
+    function playerFire() {
+        if (gameState === 'NAME_ENTRY') { entryIdx++; sounds.select(); if (entryIdx > 2) { hiScore = score; hiName = entryName.join(""); localStorage.setItem('inv_hi_score', hiScore); localStorage.setItem('inv_hi_name', hiName); resetGame('TITLE'); } else { poolIdx = charPool.indexOf(entryName[entryIdx]); } return; }
+        if ((gameState === 'PLAYING' || gameState === 'DEMO') && bullets.length < 1) { bullets.push({ x: player.x + player.w/2 - 1.5, y: player.y, w: 3, h: 10 }); sounds.shoot(); }
+    }
+
+    function drawUFO(ctx, x, y, w, h) { ctx.fillStyle = "#ff1166"; const px = w / 16; const py = h / 7; ctx.fillRect(x + 5*px, y, 6*px, py); ctx.fillRect(x + 3*px, y + py, 10*px, py); ctx.fillRect(x + 2*px, y + 2*py, 12*px, py); ctx.fillRect(x + px, y + 3*py, 14*px, py); ctx.fillRect(x, y + 4*py, 16*px, py); ctx.fillStyle = "#000"; ctx.fillRect(x + 3*px, y + 3*py, px, py); ctx.fillRect(x + 6*px, y + 3*py, px, py); ctx.fillRect(x + 9*px, y + 3*py, px, py); ctx.fillRect(x + 12*px, y + 3*py, px, py); }
+    function drawPixelInvader(ctx, x, y, w, h, type, pose) { const colors = ["#00fbff", "#ff00ff", "#ff3333"]; ctx.fillStyle = colors[type]; if (type === 0) { ctx.fillRect(x+w*0.3, y+h*0.2, w*0.4, h*0.6); ctx.fillRect(x+w*0.2, y+h*0.4, w*0.6, h*0.2); if(pose===0){ctx.fillRect(x+w*0.1, y+h*0.7, w*0.2, h*0.2);ctx.fillRect(x+w*0.7, y+h*0.7, w*0.2, h*0.2);}else{ctx.fillRect(x+w*0.3, y+h*0.8, w*0.1, h*0.2);ctx.fillRect(x+w*0.6, y+h*0.8, w*0.1, h*0.2);} } else if (type === 1) { ctx.fillRect(x+w*0.1, y+h*0.3, w*0.8, h*0.4); ctx.fillRect(x+w*0.3, y+h*0.1, w*0.1, h*0.2); ctx.fillRect(x+w*0.6, y+h*0.1, w*0.1, h*0.2); if(pose===0){ctx.fillRect(x, y+h*0.5, w*0.1, h*0.3);ctx.fillRect(x+w*0.9, y+h*0.5, w*0.1, h*0.3);}else{ctx.fillRect(x+w*0.2, y+h*0.7, w*0.2, h*0.3);ctx.fillRect(x+w*0.6, y+h*0.7, w*0.2, h*0.3);} } else { ctx.fillRect(x+w*0.1, y+h*0.2, w*0.8, h*0.4); ctx.fillRect(x+w*0.3, y+h*0.1, w*0.4, h*0.2); if(pose===0){ctx.fillRect(x+w*0.1, y+h*0.6, w*0.2, h*0.4);ctx.fillRect(x+w*0.4, y+h*0.6, w*0.2, h*0.2);ctx.fillRect(x+w*0.7, y+h*0.6, w*0.2, h*0.4);}else{ctx.fillRect(x, y+h*0.6, w*0.2, h*0.3);ctx.fillRect(x+w*0.8, y+h*0.6, w*0.2, h*0.3);ctx.fillRect(x+w*0.4, y+h*0.7, w*0.2, h*0.2);} } ctx.fillStyle="#000"; ctx.fillRect(x+w*0.3, y+h*0.4, 2, 2); ctx.fillRect(x+w*0.6, y+h*0.4, 2, 2); }
+
+    function drawTitleScreen() {
+        ctx.textAlign = "center"; ctx.fillStyle = "#fff"; ctx.font = "bold 32px 'Courier New'"; ctx.fillText("SPACE INVADERS", canvas.width/2, 80);
+        ctx.font = "18px 'Courier New'"; ctx.fillStyle = "#0f0"; ctx.fillText("PUSH START BUTTON", canvas.width/2, 125);
+        ctx.fillStyle = "#fff"; ctx.fillText(`HI-SCORE: ${String(hiScore).padStart(4, '0')} BY ${hiName}`, canvas.width/2, 155);
+        const cx = canvas.width / 2; const ty = 195; ctx.fillText("* SCORE ADVANCE TABLE *", cx, ty);
+        ctx.textAlign = "left"; const lx = cx - 80; const sx = cx + 20;
+        drawUFO(ctx, lx, ty + 25, 24, 10); ctx.fillStyle = "#ff1166"; ctx.fillText("= ? MYSTERY", sx, ty + 35);
+        drawPixelInvader(ctx, lx+2, ty+50, 20, 14, 0, 0); ctx.fillStyle = "#00fbff"; ctx.fillText("= 30 POINTS", sx, ty+62);
+        drawPixelInvader(ctx, lx+2, ty+75, 20, 14, 1, 0); ctx.fillStyle = "#ff00ff"; ctx.fillText("= 20 POINTS", sx, ty+87);
+        drawPixelInvader(ctx, lx+2, ty+100, 20, 14, 2, 0); ctx.fillStyle = "#ff3333"; ctx.fillText("= 10 POINTS", sx, ty+112);
+        ctx.textAlign = "center"; ctx.fillStyle = "#888"; ctx.font = "14px 'Courier New'"; ctx.fillText("2026  huumu&Gemini", cx, ty + 155);
+    }
+
+    function update() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for(let s of stars) { s.y += s.speed; if (s.y > canvas.height) s.y = 0; ctx.fillStyle = `rgba(255,255,255,${s.speed})`; ctx.fillRect(s.x, s.y, s.size, s.size); }
+        if (gameState === 'TITLE') { drawTitleScreen(); attractTimer++; if (attractTimer > 600) resetGame('DEMO'); requestAnimationFrame(update); return; }
+        if (gameState === 'NAME_ENTRY') { 
+            ctx.textAlign = "center"; ctx.fillStyle = "#fff"; ctx.font = "bold 24px 'Courier New'"; ctx.fillText("NEW HI-SCORE!", canvas.width/2, 100); ctx.fillStyle = "#0f0"; ctx.fillText(String(score).padStart(4, '0'), canvas.width/2, 140); ctx.fillStyle = "#fff"; ctx.font = "18px 'Courier New'"; ctx.fillText("ENTER YOUR NAME", canvas.width/2, 200); ctx.font = "bold 40px 'Courier New'"; for(let i=0; i<3; i++) { ctx.fillStyle = (i === entryIdx) ? "#0f0" : "#555"; ctx.fillText(entryName[i], canvas.width/2 - 40 + i*40, 260); if(i === entryIdx) ctx.fillRect(canvas.width/2 - 55 + i*40, 270, 30, 4); }
+            if (inputCooldown > 0) inputCooldown--; else { if (inputState.left) { poolIdx = (poolIdx - 1 + charPool.length) % charPool.length; entryName[entryIdx] = charPool[poolIdx]; sounds.select(); inputCooldown = 15; } if (inputState.right) { poolIdx = (poolIdx + 1) % charPool.length; entryName[entryIdx] = charPool[poolIdx]; sounds.select(); inputCooldown = 15; } }
+            requestAnimationFrame(update); return; 
+        }
+        if (gameState === 'GAMEOVER') { attractTimer++; if (attractTimer > 240) resetGame('TITLE'); }
+        if (gameState === 'DEMO' && attractTimer > 1800) resetGame('TITLE'); attractTimer++;
+
+        for(let inv of invaders) { if(inv.alive) drawPixelInvader(ctx, inv.x, inv.y, inv.w, inv.h, inv.type, pose); }
+        ctx.fillStyle = "#0f0"; for(let s of shelters) ctx.fillRect(s.x, s.y, s.w, s.h);
+        if (ufo.active) { drawUFO(ctx, ufo.x, ufo.y, ufo.w, ufo.h); ufo.x += ufo.speed * ufo.dir; if (ufo.x > canvas.width + 60 || ufo.x < -60) ufo.active = false; }
+        else { ufo.ufoTimer++; if (ufo.ufoTimer > 1100 && gameState !== 'GAMEOVER') { ufo.active = true; ufo.dir = Math.random() > 0.5 ? 1 : -1; ufo.x = ufo.dir === 1 ? -50 : canvas.width + 50; ufo.ufoTimer = 0; sounds.ufo(); } }
+        for (let b of bullets) { ctx.fillStyle = "#fff"; ctx.fillRect(b.x, b.y, b.w, b.h); }
+        for (let eb of enemyBullets) { ctx.fillStyle = "#ff0"; ctx.fillRect(eb.x, eb.y, eb.w, eb.h); }
+        for (let p of particles) { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); }
+        for (let f of floatingScores) { ctx.fillStyle = "#fff"; ctx.font = "bold 14px 'Courier New'"; ctx.fillText(f.val, f.x, f.y); }
+        for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.dx; p.y += p.dy; p.life--; if (p.life <= 0) particles.splice(i, 1); }
+        for (let i = floatingScores.length - 1; i >= 0; i--) { let f = floatingScores[i]; f.y -= 0.5; f.life--; if (f.life <= 0) floatingScores.splice(i, 1); }
+        if (gameState === 'EXPLODING') { requestAnimationFrame(update); return; }
+
+        // --- ★修正：自機ミサイルの判定（インベーダー、UFO、シェルター） ---
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i]; b.y -= 4.0; 
+            if (b.y < 0) { bullets.splice(i, 1); continue; }
+            let hit = false;
+            // UFO判定
+            if (ufo.active && b.x < ufo.x + ufo.w && b.x + b.w > ufo.x && b.y < ufo.y + ufo.h && b.y + b.h > ufo.y) { ufo.active = false; bullets.splice(i, 1); let bonus = (Math.floor(Math.random()*4)+1)*50; score += bonus; scoreElement.innerText = String(score).padStart(4, '0'); floatingScores.push({x:ufo.x, y:ufo.y, val:bonus, life:45}); triggerExplosion(ufo.x+ufo.w/2, ufo.y+ufo.h/2, '#ff1166', 20); sounds.ufoHit(); continue; }
+            // インベーダー判定
+            for (let inv of invaders) { if (inv.alive && b.x < inv.x + inv.w && b.x + b.w > inv.x && b.y < inv.y + inv.h && b.y + b.h > inv.y) { inv.alive = false; bullets.splice(i, 1); score += (inv.type === 0 ? 30 : (inv.type === 1 ? 20 : 10)); scoreElement.innerText = String(score).padStart(4, '0'); triggerExplosion(inv.x+inv.w/2, inv.y+inv.h/2, '#0f0'); hit = true; break; } }
+            if(hit) continue;
+            // シェルター判定
+            for (let si = shelters.length - 1; si >= 0; si--) { let s = shelters[si]; if (b.x < s.x + s.w && b.x + b.w > s.x && b.y < s.y + s.h && b.y + b.h > s.y) { bullets.splice(i, 1); shelters.splice(si, 1); break; } }
+        }
+
+        for (let i = enemyBullets.length - 1; i >= 0; i--) {
+            let eb = enemyBullets[i]; eb.y += 3; if (eb.y > canvas.height) { enemyBullets.splice(i, 1); continue; }
+            if (eb.x < player.x + player.w && eb.x + eb.w > player.x && eb.y < player.y + player.h && eb.y + eb.h > player.y) { handlePlayerHit(); continue; }
+            for (let si = shelters.length - 1; si >= 0; si--) { let s = shelters[si]; if (eb.x < s.x + s.w && eb.x + eb.w > s.x && eb.y < s.y + s.h && eb.y + eb.h > s.y) { enemyBullets.splice(i, 1); shelters.splice(si, 1); break; } }
+        }
+
+        let aliveInvaders = invaders.filter(v => v.alive);
+        let moveInterval = Math.max(2, aliveInvaders.length * 1.5); moveTick++;
+        if (moveTick >= moveInterval && gameState !== 'GAMEOVER') {
+            moveTick = 0; let edge = false; pose = 1 - pose; moveSoundStep = (moveSoundStep + 1) % 4; if(gameState !== 'GAMEOVER') sounds.invaderMove(moveSoundStep);
+            for (let inv of aliveInvaders) { if ((invaderDirection === 1 && inv.x + inv.w > canvas.width - 20) || (invaderDirection === -1 && inv.x < 20)) { edge = true; break; } }
+            if (edge) { invaderDirection *= -1; for (let inv of invaders) inv.y += 15; } else { for (let inv of invaders) inv.x += stepAmount * invaderDirection; }
+        }
+        for (let inv of aliveInvaders) { if (inv.y + inv.h >= player.y) { if (score > hiScore) { gameState = 'NAME_ENTRY'; entryIdx = 0; entryName = ["A","A","A"]; poolIdx = 0; } else { resetGame('GAMEOVER'); } break; } if (roundTimer > 180 && enemyBullets.length < 2 && Math.random() < 0.001) enemyBullets.push({ x: inv.x + inv.w/2, y: inv.y + inv.h, w: 3, h: 7 }); }
+        if (aliveInvaders.length === 0 && gameState !== 'GAMEOVER' && gameState !== 'TITLE') resetGame('PLAYING');
+
+        if (gameState !== 'GAMEOVER') {
+            if (gameState === 'PLAYING') { if (inputState.left) player.dx = -player.speed; else if (inputState.right) player.dx = player.speed; else player.dx = 0; }
+            else if (gameState === 'DEMO') { let pMid = player.x + player.w/2; let hazard = enemyBullets.find(eb => Math.abs(eb.x - pMid) < 35 && eb.y < player.y && (player.y - eb.y) < 130); if (hazard) player.dx = (pMid < hazard.x) ? -player.speed : player.speed; else { let tx = pMid; if (ufo.active) tx = ufo.x + ufo.w/2; else if (aliveInvaders.length > 0) { if (aiTargetIndex === -1 || !invaders[aiTargetIndex].alive) { let sorted = [...aliveInvaders].sort((a,b)=>b.y-a.y); aiTargetIndex = invaders.indexOf(sorted[0]); } tx = invaders[aiTargetIndex].x + invaders[aiTargetIndex].w/2; } player.dx = (pMid < tx - 2) ? player.speed * 0.8 : (pMid > tx + 2 ? -player.speed * 0.8 : 0); } if (Math.random() < 0.07) playerFire(); }
+            player.x += player.dx; player.x = Math.max(0, Math.min(canvas.width - player.w, player.x)); drawPixelPlayer(ctx, player.x, player.y, player.w, player.h); 
+        }
+        roundTimer++; requestAnimationFrame(update);
+    }
+
+    const joyBase = document.getElementById('joypad-base'); const joyKnob = document.getElementById('joypad-knob'); let joyActive = false;
+    const updateJoy = (clientX) => { const rect = joyBase.getBoundingClientRect(); const centerX = rect.left + rect.width / 2; let deltaX = Math.max(-35, Math.min(35, clientX - centerX)); joyKnob.style.transition = 'none'; joyKnob.style.transform = `translateX(${deltaX}px)`; if (deltaX < -10) { inputState.left = true; inputState.right = false; } else if (deltaX > 10) { inputState.left = false; inputState.right = true; } else { inputState.left = false; inputState.right = false; } };
+    joyBase.addEventListener('touchstart', (e) => { e.preventDefault(); joyActive = true; updateJoy(e.touches[0].clientX); }, {passive:false});
+    window.addEventListener('touchmove', (e) => { if(joyActive) { e.preventDefault(); updateJoy(e.touches[0].clientX); } }, {passive:false});
+    window.addEventListener('touchend', () => { joyActive = false; joyKnob.style.transition = 'transform 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275)'; joyKnob.style.transform = `translateX(0px)`; inputState.left = false; inputState.right = false; });
+    document.getElementById('fire-btn').addEventListener('touchstart', (e) => { e.preventDefault(); playerFire(); }, {passive:false});
+    startBtn.onclick = () => resetGame('PLAYING');
+    resizeCanvas(); resetGame('TITLE'); update();
+</script>
+</body>
+</html>
